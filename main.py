@@ -1,79 +1,149 @@
 import duckdb
 import numpy as np
 import pandas as pd
-import plotly.express as px
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
 # -------------------------------
-# 1. Charger ou générer des données
+# 1. Génération des données
 # -------------------------------
-
-# Exemple : création d'une table DuckDB en mémoire
-con = duckdb.connect(database=':memory:')
-
-# Génération de données fictives : 10 "frames" temporelles, 50 points par frame
 np.random.seed(42)
 frames = []
-for t in range(10):
-    x = np.random.normal(loc=t, scale=1.0, size=50)
-    y = np.random.normal(loc=t*0.5, scale=0.5, size=50)
+n_points = 20  # nombre de points par frame
+n_frames = 10
+
+for t in range(n_frames):
+    x = np.random.normal(loc=t, scale=1.0, size=n_points)
+    y = np.random.normal(loc=t*0.5, scale=0.5, size=n_points)
+    z = np.random.normal(loc=t*0.3, scale=0.2, size=n_points)
     frames.append(pd.DataFrame({
         'x': x,
         'y': y,
-        'time': t
+        'z': z,
+        'time': t,
+        'id': np.arange(n_points)  # identifiant du point pour traçage
     }))
 
 df = pd.concat(frames, ignore_index=True)
 
-# On peut stocker ça dans DuckDB
-con.execute("CREATE TABLE points AS SELECT * FROM df")
-
 # -------------------------------
-# 2. Récupérer les données via DuckDB
+# 2. Créer une mosaïque de subplots
 # -------------------------------
-
-# Exemple : filtrer ou calculer quelque chose via SQL
-query = """
-SELECT *, 
-       x + y AS x_plus_y
-FROM points
-WHERE x_plus_y < 20
-"""
-df_sql = con.execute(query).fetchdf()
-
-# -------------------------------
-# 3. Préparer des transformations avec NumPy
-# -------------------------------
-
-# Par exemple : normalisation des colonnes pour l'affichage
-df_sql['x_norm'] = (df_sql['x'] - df_sql['x'].mean()) / df_sql['x'].std()
-df_sql['y_norm'] = (df_sql['y'] - df_sql['y'].mean()) / df_sql['y'].std()
-
-# -------------------------------
-# 4. Créer un nuage de points interactif avec Plotly
-# -------------------------------
-
-fig = px.scatter(
-    df_sql,
-    x='x_norm',
-    y='y_norm',
-    animation_frame='time',   # <- clé pour l'animation
-    hover_data=['x', 'y'],   # hover show original values
-    title="Nuage de points animé avec DuckDB, NumPy et Plotly",
-    labels={'x_norm': 'X normalisé', 'y_norm': 'Y normalisé'}
+fig = make_subplots(
+    rows=1, cols=3,
+    subplot_titles=["X vs Y", "X vs Z", "Y vs Z"]
 )
 
-# Options pour rendre l'animation plus "smooth"
+# -------------------------------
+# 3. Créer les traces initiales (frame 0)
+# -------------------------------
+initial_frame = df[df['time'] == 0]
+
+trace_xy = go.Scatter(
+    x=initial_frame['x'],
+    y=initial_frame['y'],
+    mode='markers',
+    marker=dict(size=10, color=initial_frame['id'], colorscale='Viridis', showscale=True),
+    text=[f"ID: {i}" for i in initial_frame['id']],
+    name='X vs Y'
+)
+
+trace_xz = go.Scatter(
+    x=initial_frame['x'],
+    y=initial_frame['z'],
+    mode='markers',
+    marker=dict(size=10, color=initial_frame['id'], colorscale='Viridis', showscale=False),
+    text=[f"ID: {i}" for i in initial_frame['id']],
+    name='X vs Z'
+)
+
+trace_yz = go.Scatter(
+    x=initial_frame['y'],
+    y=initial_frame['z'],
+    mode='markers',
+    marker=dict(size=10, color=initial_frame['id'], colorscale='Viridis', showscale=False),
+    text=[f"ID: {i}" for i in initial_frame['id']],
+    name='Y vs Z'
+)
+
+fig.add_trace(trace_xy, row=1, col=1)
+fig.add_trace(trace_xz, row=1, col=2)
+fig.add_trace(trace_yz, row=1, col=3)
+
+# -------------------------------
+# 4. Ajouter une zone de texte pour suivre un point
+# -------------------------------
+# Ici on suit le point d'id=5 par exemple
+tracked_id = 5
+tracked_point = initial_frame[initial_frame['id'] == tracked_id].iloc[0]
+
+fig.add_annotation(
+    x=tracked_point['x'], y=tracked_point['y'],
+    xref='x1', yref='y1',
+    text=f"Tracked ID: {tracked_id}",
+    showarrow=True,
+    arrowhead=2
+)
+
+# -------------------------------
+# 5. Créer les frames d'animation
+# -------------------------------
+frames_list = []
+for t in range(n_frames):
+    df_t = df[df['time'] == t]
+    tracked_point = df_t[df_t['id'] == tracked_id].iloc[0]
+
+    frame = go.Frame(
+        data=[
+            go.Scatter(x=df_t['x'], y=df_t['y'], mode='markers', marker=dict(color=df_t['id'], colorscale='Viridis')),
+            go.Scatter(x=df_t['x'], y=df_t['z'], mode='markers', marker=dict(color=df_t['id'], colorscale='Viridis')),
+            go.Scatter(x=df_t['y'], y=df_t['z'], mode='markers', marker=dict(color=df_t['id'], colorscale='Viridis')),
+        ],
+        name=str(t),
+        layout=go.Layout(
+            annotations=[
+                go.layout.Annotation(
+                    x=tracked_point['x'], y=tracked_point['y'],
+                    xref='x1', yref='y1',
+                    text=f"Tracked ID: {tracked_id}",
+                    showarrow=True,
+                    arrowhead=2
+                )
+            ]
+        )
+    )
+    frames_list.append(frame)
+
+fig.frames = frames_list
+
+# -------------------------------
+# 6. Ajouter les boutons de lecture
+# -------------------------------
 fig.update_layout(
-    transition={'duration': 500},
-    xaxis=dict(range=[-3, 3]),
-    yaxis=dict(range=[-3, 3])
+    updatemenus=[{
+        "type": "buttons",
+        "buttons": [
+            {
+                "label": "Play",
+                "method": "animate",
+                "args": [None, {"frame": {"duration": 500, "redraw": True},
+                                "fromcurrent": True, "transition": {"duration": 0}}]
+            },
+            {
+                "label": "Pause",
+                "method": "animate",
+                "args": [[None], {"frame": {"duration": 0, "redraw": False},
+                                  "mode": "immediate",
+                                  "transition": {"duration": 0}}]
+            }
+        ],
+        "showactive": True,
+    }]
 )
 
 # -------------------------------
-# 5. Affichage web-friendly
+# 7. Affichage
 # -------------------------------
-# Dans Jupyter Notebook :
+fig.update_layout(title="Mosaïque animée synchronisée avec suivi d'un point")
+fig.write_html("subplot_animation_tracked.html", include_plotlyjs='cdn')
 fig.show()
-
-# Ou export en HTML autonome pour partager avec un recruteur :
-fig.write_html("scatter_animation.html", include_plotlyjs='cdn')
